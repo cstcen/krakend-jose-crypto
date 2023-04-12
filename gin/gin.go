@@ -71,7 +71,7 @@ func Decrypt(hf luraGin.HandlerFactory, logger logging.Logger) luraGin.HandlerFa
 
 			authInHeader := c.GetHeader("Authorization")
 			prefix := "Bearer "
-			ciphertext := strings.TrimPrefix(prefix, authInHeader)
+			ciphertext := strings.TrimPrefix(authInHeader, prefix)
 
 			logger.Debug(logPrefix, "ciphertext: ", ciphertext)
 			plaintext, err := CBCDecrypt(ciphertext, signatureConfig.CipherKey)
