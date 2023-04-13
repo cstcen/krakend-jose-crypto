@@ -26,7 +26,7 @@ func (r *ResponseWriter) Write(p []byte) (n int, err error) {
 			continue
 		}
 
-		ciphertext, err := CBCEncrypt(tmp, r.CipherKey)
+		ciphertext, err := CFBEncrypt(tmp, r.CipherKey)
 		if err != nil {
 			r.logger.Warning(r.logPrefix, "failed to cbc encrypt: ", err.Error())
 			continue

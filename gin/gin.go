@@ -74,7 +74,7 @@ func Decrypt(hf luraGin.HandlerFactory, logger logging.Logger) luraGin.HandlerFa
 			ciphertext := strings.TrimPrefix(authInHeader, prefix)
 
 			logger.Debug(logPrefix, "ciphertext: ", ciphertext)
-			plaintext, err := CBCDecrypt(ciphertext, signatureConfig.CipherKey)
+			plaintext, err := CFBDecrypt(ciphertext, signatureConfig.CipherKey)
 			if err != nil {
 				logger.Debug(logPrefix, "failed to cbc decrypt: ", err.Error())
 				return
