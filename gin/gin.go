@@ -69,19 +69,18 @@ func Decrypt(hf luraGin.HandlerFactory, logger logging.Logger) luraGin.HandlerFa
 
 		return func(c *gin.Context) {
 
-			authInHeader := c.GetHeader("Authorization")
 			prefix := "Bearer "
-			ciphertext := strings.TrimPrefix(authInHeader, prefix)
+			ciphertext := strings.TrimPrefix(c.GetHeader("Authorization"), prefix)
 
 			logger.Debug(logPrefix, "ciphertext: ", ciphertext)
 			plaintext, err := CFBDecrypt(ciphertext, signatureConfig.CipherKey)
 			if err != nil {
-				logger.Debug(logPrefix, "failed to cbc decrypt: ", err.Error())
+				logger.Debug(logPrefix, "failed to decrypt: ", err.Error())
 				return
 			}
 
 			logger.Debug(logPrefix, "plaintext: ", plaintext)
-			c.Header("Authorization", prefix+plaintext)
+			c.Request.Header.Set("Authorization", prefix+plaintext)
 
 			handler(c)
 
