@@ -19,6 +19,8 @@ func (r *ResponseWriter) Write(p []byte) (n int, err error) {
 	if err := json.Unmarshal(p, &res); err != nil {
 		return r.ResponseWriter.Write(p)
 	}
+	cipherKey := r.CipherKey
+	r.logger.Debug(r.logPrefix, "cipher key: ", cipherKey)
 	for _, k := range r.KeysToSign {
 		tmp, ok := res[k].(string)
 		if !ok {
@@ -26,9 +28,9 @@ func (r *ResponseWriter) Write(p []byte) (n int, err error) {
 			continue
 		}
 
-		ciphertext, err := CFBEncrypt(tmp, r.CipherKey)
+		ciphertext, err := CFBEncrypt(tmp, cipherKey)
 		if err != nil {
-			r.logger.Warning(r.logPrefix, "failed to cbc encrypt: ", err.Error())
+			r.logger.Warning(r.logPrefix, "failed to encrypt: ", err.Error())
 			continue
 		}
 

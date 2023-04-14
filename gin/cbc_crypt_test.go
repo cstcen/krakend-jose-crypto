@@ -3,6 +3,7 @@ package gin
 import (
 	"encoding/base64"
 	"encoding/hex"
+	"fmt"
 	"github.com/stretchr/testify/assert"
 	"testing"
 )
@@ -12,6 +13,13 @@ var (
 	content    = "eyJhbGciOiJIUzI1NiIsImtpZCI6InNpbTIifQ.eyJhdWQiOiJodHRwczovL2FwaS54azUuY29tL2dhdGV3YXkvdjIuMCIsImV4cCI6MTY4MTI4ODIwNiwiaWF0IjoxNjgxMjY2NjA2LCJpc3MiOiJodHRwczovL2FwaS54azUuY29tIiwic3ViIjoiYSJ9.NYag7rS7yVlUjdcLQ_dRn7sk0DOET5kvkhG8wvIzgjs"
 	ciphertext = "daaabfae7e74c92bb719d0159ba70506a99cd1538e89f96da71f60af1a6f9d374ee8fdf49e97b920b7c4f15d4f3578b1aebd59fc2c1f8f810d17207abb44b3bdec142b60f03f5b1e47e94f646f675ee4a32bfdd919349f5306a627da29b0c41061ea840ebb6d37fb693462fedfc84bfcc4a6e23ec4235db6f033869f49a7c85d5312099a0b75a2d7d504cd619a68bb5a8797a6c48d1f792194b936e3de72931edf58f62c7322750ba8576f359fb298dccb33d83bb4fdc5be9e0ed0b76ba22af5266e344d11ae6b38af0a8e2684bfd5ca1a14bac9978c26ce9cc83de86a118366e36e7a39755fa8a3e529b796943138deb18b42814e32c3767ce3b2"
 )
+
+func TestBase64Key(t *testing.T) {
+	e := base64.StdEncoding.EncodeToString(key)
+	fmt.Printf("%s\n", e)
+	d, _ := base64.StdEncoding.DecodeString(e)
+	fmt.Printf("%s\n", d)
+}
 
 func TestCBCEncrypt(t *testing.T) {
 	type args struct {
