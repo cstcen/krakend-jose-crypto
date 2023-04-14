@@ -4,7 +4,6 @@ import (
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/rand"
-	"encoding/base64"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -12,7 +11,6 @@ import (
 )
 
 func CFBEncrypt(content string, key []byte) (string, error) {
-	key, _ = base64.StdEncoding.DecodeString(string(key))
 	plaintext := []byte(content)
 
 	block, err := aes.NewCipher(key)
@@ -33,7 +31,6 @@ func CFBEncrypt(content string, key []byte) (string, error) {
 }
 
 func CFBDecrypt(content string, key []byte) (string, error) {
-	key, _ = base64.StdEncoding.DecodeString(string(key))
 	ciphertext, _ := hex.DecodeString(content)
 
 	block, err := aes.NewCipher(key)
