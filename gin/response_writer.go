@@ -2,6 +2,7 @@ package gin
 
 import (
 	"encoding/json"
+	"fmt"
 	"github.com/gin-gonic/gin"
 	jose "github.com/krakendio/krakend-jose/v2"
 	"github.com/luraproject/lura/v2/logging"
@@ -20,7 +21,7 @@ func (r *ResponseWriter) Write(p []byte) (n int, err error) {
 		return r.ResponseWriter.Write(p)
 	}
 	cipherKey := r.CipherKey
-	r.logger.Debug(r.logPrefix, "cipher key: ", cipherKey)
+	r.logger.Debug(r.logPrefix, "cipher key: ", fmt.Sprintf("%s", cipherKey))
 	for _, k := range r.KeysToSign {
 		tmp, ok := res[k].(string)
 		if !ok {
