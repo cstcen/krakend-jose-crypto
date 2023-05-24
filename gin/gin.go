@@ -92,7 +92,7 @@ func Decrypt(hf luraGin.HandlerFactory, logger logging.Logger) luraGin.HandlerFa
 		logPrefix := "[ENDPOINT: " + cfg.Endpoint + "][JWTDecrypt]"
 		decryptCfg, err := GetDecryptCfg(cfg)
 		handler := hf(cfg, prxy)
-		if err == ErrNoEncryptCfg {
+		if err == ErrNoDecryptCfg {
 			logger.Debug(logPrefix, "Decrypt disabled")
 			return handler
 		}
