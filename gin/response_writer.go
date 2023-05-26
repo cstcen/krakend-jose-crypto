@@ -2,7 +2,6 @@ package gin
 
 import (
 	"encoding/json"
-	"fmt"
 	"github.com/gin-gonic/gin"
 	"github.com/luraproject/lura/v2/logging"
 )
@@ -12,7 +11,7 @@ type ResponseWriter struct {
 	KeysToSign []string `json:"keys_to_sign,omitempty"`
 	logger     logging.Logger
 	logPrefix  string
-	cipherKey  []byte
+	encryptor  func(content string) (string, error)
 }
 
 func (r *ResponseWriter) Write(p []byte) (n int, err error) {
@@ -27,8 +26,7 @@ func (r *ResponseWriter) Write(p []byte) (n int, err error) {
 			continue
 		}
 
-		r.logger.Debug(r.logPrefix, "cipher key: ", fmt.Sprintf("%s", r.cipherKey))
-		ciphertext, err := CFBEncrypt(tmp, r.cipherKey)
+		ciphertext, err := r.encryptor(tmp)
 		if err != nil {
 			r.logger.Warning(r.logPrefix, "failed to encrypt: ", err.Error())
 			continue

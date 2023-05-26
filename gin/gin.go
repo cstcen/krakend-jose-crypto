@@ -1,6 +1,7 @@
 package gin
 
 import (
+	"fmt"
 	"github.com/gin-gonic/gin"
 	jose "github.com/krakendio/krakend-jose/v2"
 	joseGin "github.com/krakendio/krakend-jose/v2/gin"
@@ -40,14 +41,21 @@ func Encrypt(hf luraGin.HandlerFactory, logger logging.Logger) luraGin.HandlerFa
 
 		return func(c *gin.Context) {
 
-			cipherKey := encryptCfg.CipherKey
+			encryptorFn := func(key []byte) func(content string) (string, error) {
+				return func(content string) (string, error) {
+					logger.Debug(logPrefix, "cipher key: ", fmt.Sprintf("%s", key))
+					return CFBEncrypt(content, key)
+				}
+			}
 			keysToSign := encryptCfg.KeysToSign
+			cipherKey := encryptCfg.CipherKey
+			encryptor := encryptorFn(cipherKey)
 			c.Writer = &ResponseWriter{
 				ResponseWriter: c.Writer,
 				KeysToSign:     keysToSign,
 				logger:         logger,
 				logPrefix:      logPrefix,
-				cipherKey:      cipherKey,
+				encryptor:      encryptor,
 			}
 
 			handler(c)
@@ -67,7 +75,7 @@ func Encrypt(hf luraGin.HandlerFactory, logger logging.Logger) luraGin.HandlerFa
 						continue
 					}
 					if keyToSign == key {
-						enVal, err := CFBEncrypt(val, cipherKey)
+						enVal, err := encryptor(val)
 						if err != nil {
 							logger.Warning(logPrefix, "key: "+key, "encrypt err: "+err.Error())
 							continue
