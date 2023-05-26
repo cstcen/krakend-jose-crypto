@@ -10,6 +10,7 @@ import (
 	"github.com/luraproject/lura/v2/proxy"
 	luraGin "github.com/luraproject/lura/v2/router/gin"
 	"net/http"
+	"net/url"
 	"strings"
 )
 
@@ -56,32 +57,32 @@ func Encrypt(hf luraGin.HandlerFactory, logger logging.Logger) luraGin.HandlerFa
 
 			handler(c)
 
-			// location := c.GetHeader("Location")
-			// logger.Debug(logger, "location: ", location)
-			// lUrl, err := url.Parse(location)
-			// if err != nil {
-			// 	return
-			// }
+			location := c.GetHeader("Location")
+			logger.Debug(logger, "location: ", location)
+			lUrl, err := url.Parse(location)
+			if err != nil {
+				return
+			}
 
-			// fragments := strings.Split(lUrl.Fragment, "&")
-			// for _, keyToSign := range keysToSign {
-			// 	for i, fragment := range fragments {
-			// 		key, val, found := strings.Cut(fragment, "=")
-			// 		if !found {
-			// 			continue
-			// 		}
-			// 		if keyToSign == key {
-			// 			enVal, err := encryptor(val)
-			// 			if err != nil {
-			// 				logger.Warning(logPrefix, "key: "+key, "encrypt err: "+err.Error())
-			// 				continue
-			// 			}
-			// 			fragments[i] = enVal
-			// 		}
-			// 	}
-			// }
-			//
-			// lUrl.Fragment = strings.Join(fragments, "&")
+			fragments := strings.Split(lUrl.Fragment, "&")
+			for _, keyToSign := range keysToSign {
+				for i, fragment := range fragments {
+					key, val, found := strings.Cut(fragment, "=")
+					if !found {
+						continue
+					}
+					if keyToSign == key {
+						enVal, err := encryptor(val)
+						if err != nil {
+							logger.Warning(logPrefix, "key: "+key, "encrypt err: "+err.Error())
+							continue
+						}
+						fragments[i] = enVal
+					}
+				}
+			}
+
+			lUrl.Fragment = strings.Join(fragments, "&")
 		}
 	}
 }
