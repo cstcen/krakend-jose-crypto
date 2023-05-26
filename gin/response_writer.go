@@ -2,16 +2,17 @@ package gin
 
 import (
 	"encoding/json"
+	"fmt"
 	"github.com/gin-gonic/gin"
+	jose "github.com/krakendio/krakend-jose/v2"
 	"github.com/luraproject/lura/v2/logging"
 )
 
 type ResponseWriter struct {
 	gin.ResponseWriter
-	KeysToSign []string `json:"keys_to_sign,omitempty"`
-	logger     logging.Logger
-	logPrefix  string
-	encryptor  func(content string) (string, error)
+	jose.SignerConfig
+	logger    logging.Logger
+	logPrefix string
 }
 
 func (r *ResponseWriter) Write(p []byte) (n int, err error) {
@@ -19,6 +20,8 @@ func (r *ResponseWriter) Write(p []byte) (n int, err error) {
 	if err := json.Unmarshal(p, &res); err != nil {
 		return r.ResponseWriter.Write(p)
 	}
+	cipherKey := r.CipherKey
+	r.logger.Debug(r.logPrefix, "cipher key: ", fmt.Sprintf("%s", cipherKey))
 	for _, k := range r.KeysToSign {
 		tmp, ok := res[k].(string)
 		if !ok {
@@ -26,7 +29,7 @@ func (r *ResponseWriter) Write(p []byte) (n int, err error) {
 			continue
 		}
 
-		ciphertext, err := r.encryptor(tmp)
+		ciphertext, err := CFBEncrypt(tmp, cipherKey)
 		if err != nil {
 			r.logger.Warning(r.logPrefix, "failed to encrypt: ", err.Error())
 			continue

@@ -1,7 +1,6 @@
 package gin
 
 import (
-	"fmt"
 	"github.com/gin-gonic/gin"
 	jose "github.com/krakendio/krakend-jose/v2"
 	joseGin "github.com/krakendio/krakend-jose/v2/gin"
@@ -10,7 +9,6 @@ import (
 	"github.com/luraproject/lura/v2/proxy"
 	luraGin "github.com/luraproject/lura/v2/router/gin"
 	"net/http"
-	"net/url"
 	"strings"
 )
 
@@ -21,12 +19,9 @@ func HandlerFactory(hf luraGin.HandlerFactory, logger logging.Logger, rejecterF 
 func Encrypt(hf luraGin.HandlerFactory, logger logging.Logger) luraGin.HandlerFactory {
 	return func(cfg *config.EndpointConfig, prxy proxy.Proxy) gin.HandlerFunc {
 		logPrefix := "[ENDPOINT: " + cfg.Endpoint + "][JWTEncrypt]"
-		encryptCfg, err := GetEncryptCfg(cfg)
-		if err != nil {
-			return nil
-		}
+		signerConfig, _, err := jose.NewSigner(cfg, nil)
 		handler := hf(cfg, prxy)
-		if err == ErrNoEncryptCfg {
+		if err == jose.ErrNoSignerCfg {
 			logger.Debug(logPrefix, "Encrypt disabled")
 			return handler
 		}
@@ -41,48 +36,15 @@ func Encrypt(hf luraGin.HandlerFactory, logger logging.Logger) luraGin.HandlerFa
 
 		return func(c *gin.Context) {
 
-			encryptor := func(content string) (string, error) {
-				cipherKey := encryptCfg.CipherKey
-				logger.Debug(logPrefix, "cipher key: ", fmt.Sprintf("%s", cipherKey))
-				return CFBEncrypt(content, cipherKey)
-			}
-			keysToSign := encryptCfg.KeysToSign
 			c.Writer = &ResponseWriter{
 				ResponseWriter: c.Writer,
-				KeysToSign:     keysToSign,
+				SignerConfig:   *signerConfig,
 				logger:         logger,
 				logPrefix:      logPrefix,
-				encryptor:      encryptor,
 			}
 
 			handler(c)
 
-			location := c.GetHeader("Location")
-			logger.Debug(logger, "location: ", location)
-			lUrl, err := url.Parse(location)
-			if err != nil {
-				return
-			}
-
-			fragments := strings.Split(lUrl.Fragment, "&")
-			for _, keyToSign := range keysToSign {
-				for i, fragment := range fragments {
-					key, val, found := strings.Cut(fragment, "=")
-					if !found {
-						continue
-					}
-					if keyToSign == key {
-						enVal, err := encryptor(val)
-						if err != nil {
-							logger.Warning(logPrefix, "key: "+key, "encrypt err: "+err.Error())
-							continue
-						}
-						fragments[i] = enVal
-					}
-				}
-			}
-
-			lUrl.Fragment = strings.Join(fragments, "&")
 		}
 	}
 }
@@ -90,9 +52,9 @@ func Encrypt(hf luraGin.HandlerFactory, logger logging.Logger) luraGin.HandlerFa
 func Decrypt(hf luraGin.HandlerFactory, logger logging.Logger) luraGin.HandlerFactory {
 	return func(cfg *config.EndpointConfig, prxy proxy.Proxy) gin.HandlerFunc {
 		logPrefix := "[ENDPOINT: " + cfg.Endpoint + "][JWTDecrypt]"
-		decryptCfg, err := GetDecryptCfg(cfg)
+		signatureConfig, err := jose.GetSignatureConfig(cfg)
 		handler := hf(cfg, prxy)
-		if err == ErrNoEncryptCfg {
+		if err == jose.ErrNoValidatorCfg {
 			logger.Debug(logPrefix, "Decrypt disabled")
 			return handler
 		}
@@ -111,7 +73,7 @@ func Decrypt(hf luraGin.HandlerFactory, logger logging.Logger) luraGin.HandlerFa
 			ciphertext := strings.TrimPrefix(c.GetHeader("Authorization"), prefix)
 
 			logger.Debug(logPrefix, "ciphertext: ", ciphertext)
-			plaintext, err := CFBDecrypt(ciphertext, decryptCfg.CipherKey)
+			plaintext, err := CFBDecrypt(ciphertext, signatureConfig.CipherKey)
 			if err != nil {
 				logger.Debug(logPrefix, "failed to decrypt: ", err.Error())
 				return
