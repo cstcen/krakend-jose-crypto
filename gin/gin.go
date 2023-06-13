@@ -72,30 +72,25 @@ func Decrypt(hf luraGin.HandlerFactory, logger logging.Logger) luraGin.HandlerFa
 
 		return func(c *gin.Context) {
 
+			req := c.Request
+			cipherKey := signatureConfig.CipherKey
+
 			prefix := "Bearer "
 			ciphertext := strings.TrimPrefix(c.GetHeader("Authorization"), prefix)
-
-			logger.Debug(logPrefix, "ciphertext: ", ciphertext)
-			if len(ciphertext) == 0 {
-				handler(c)
-				return
-			}
-			cipherKey := signatureConfig.CipherKey
-			plaintext, err := CFBDecrypt(ciphertext, cipherKey)
-			if err != nil {
-				logger.Debug(logPrefix, "failed to decrypt: ", err.Error())
-				handler(c)
-				return
-			}
-
-			logger.Debug(logPrefix, "plaintext: ", plaintext)
-			req := c.Request
-			req.Header.Set("Authorization", prefix+plaintext)
-
-			if req.Body != nil {
-				if decryptBody(c, req, handler, cipherKey) {
+			if len(ciphertext) != 0 {
+				logger.Debug(logPrefix, "header ciphertext: ", ciphertext)
+				plaintext, err := CFBDecrypt(ciphertext, cipherKey)
+				if err != nil {
+					logger.Debug(logPrefix, "failed to decrypt: ", err.Error())
+					handler(c)
 					return
 				}
+				logger.Debug(logPrefix, "plaintext: ", plaintext)
+				req.Header.Set("Authorization", prefix+plaintext)
+			}
+
+			if req.Body != nil {
+				decryptBody(req, cipherKey)
 			}
 
 			handler(c)
@@ -104,11 +99,10 @@ func Decrypt(hf luraGin.HandlerFactory, logger logging.Logger) luraGin.HandlerFa
 	}
 }
 
-func decryptBody(c *gin.Context, req *http.Request, handler gin.HandlerFunc, cipherKey []byte) bool {
+func decryptBody(req *http.Request, cipherKey []byte) {
 	var result map[string]any
 	if err := json.NewDecoder(req.Body).Decode(&result); err != nil {
-		handler(c)
-		return true
+		return
 	}
 	req.Body.Close()
 	keysToSign := []string{"access_token", "refresh_token"}
@@ -119,17 +113,14 @@ func decryptBody(c *gin.Context, req *http.Request, handler gin.HandlerFunc, cip
 		}
 		plaintext, err := CFBDecrypt(ciphertext, cipherKey)
 		if err != nil {
-			handler(c)
-			return true
+			return
 		}
 		result[k] = plaintext
 	}
 
 	buf := new(bytes.Buffer)
 	if err := json.NewEncoder(buf).Encode(result); err != nil {
-		handler(c)
-		return true
+		return
 	}
 	req.Body = io.NopCloser(buf)
-	return false
 }
