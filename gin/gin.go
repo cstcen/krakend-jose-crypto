@@ -1,6 +1,8 @@
 package gin
 
 import (
+	"bytes"
+	"encoding/json"
 	"github.com/gin-gonic/gin"
 	jose "github.com/krakendio/krakend-jose/v2"
 	joseGin "github.com/krakendio/krakend-jose/v2/gin"
@@ -8,6 +10,7 @@ import (
 	"github.com/luraproject/lura/v2/logging"
 	"github.com/luraproject/lura/v2/proxy"
 	luraGin "github.com/luraproject/lura/v2/router/gin"
+	"io"
 	"net/http"
 	"strings"
 )
@@ -73,17 +76,60 @@ func Decrypt(hf luraGin.HandlerFactory, logger logging.Logger) luraGin.HandlerFa
 			ciphertext := strings.TrimPrefix(c.GetHeader("Authorization"), prefix)
 
 			logger.Debug(logPrefix, "ciphertext: ", ciphertext)
-			plaintext, err := CFBDecrypt(ciphertext, signatureConfig.CipherKey)
+			if len(ciphertext) == 0 {
+				handler(c)
+				return
+			}
+			cipherKey := signatureConfig.CipherKey
+			plaintext, err := CFBDecrypt(ciphertext, cipherKey)
 			if err != nil {
 				logger.Debug(logPrefix, "failed to decrypt: ", err.Error())
+				handler(c)
 				return
 			}
 
 			logger.Debug(logPrefix, "plaintext: ", plaintext)
-			c.Request.Header.Set("Authorization", prefix+plaintext)
+			req := c.Request
+			req.Header.Set("Authorization", prefix+plaintext)
+
+			if req.Body != nil {
+				if decryptBody(c, req, handler, cipherKey) {
+					return
+				}
+			}
 
 			handler(c)
 
 		}
 	}
+}
+
+func decryptBody(c *gin.Context, req *http.Request, handler gin.HandlerFunc, cipherKey []byte) bool {
+	var result map[string]any
+	if err := json.NewDecoder(req.Body).Decode(&result); err != nil {
+		handler(c)
+		return true
+	}
+	req.Body.Close()
+	keysToSign := []string{"access_token", "refresh_token"}
+	for _, k := range keysToSign {
+		ciphertext, ok := result[k].(string)
+		if !ok {
+			continue
+		}
+		plaintext, err := CFBDecrypt(ciphertext, cipherKey)
+		if err != nil {
+			handler(c)
+			return true
+		}
+		result[k] = plaintext
+	}
+
+	buf := new(bytes.Buffer)
+	if err := json.NewEncoder(buf).Encode(result); err != nil {
+		handler(c)
+		return true
+	}
+	req.Body = io.NopCloser(buf)
+	return false
 }
