@@ -90,7 +90,7 @@ func Decrypt(hf luraGin.HandlerFactory, logger logging.Logger) luraGin.HandlerFa
 			}
 
 			if req.Body != nil {
-				decryptBody(req, cipherKey)
+				// decryptBody(req, cipherKey)
 			}
 
 			handler(c)
