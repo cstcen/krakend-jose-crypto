@@ -85,7 +85,7 @@ func Decrypt(hf luraGin.HandlerFactory, logger logging.Logger, decrypterF Decryp
 			ciphertext := strings.TrimPrefix(c.GetHeader("Authorization"), prefix)
 			if len(ciphertext) != 0 {
 				logger.Debug(logPrefix, "header ciphertext: ", ciphertext)
-				plaintext, err := decrypterF.NewDecrypter()(ciphertext)
+				plaintext, err := decrypterF.NewDecrypter().Decrypt(ciphertext)
 				if err != nil {
 					logger.Debug(logPrefix, "failed to decrypt: ", err.Error())
 					handler(c)

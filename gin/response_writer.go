@@ -30,7 +30,7 @@ func (r *ResponseWriter) Write(p []byte) (n int, err error) {
 			continue
 		}
 
-		ciphertext, err := encrypter(tmp)
+		ciphertext, err := encrypter.Encrypt(tmp)
 		if err != nil {
 			r.logger.Warning(r.logPrefix, "failed to encrypt: ", err.Error())
 			continue

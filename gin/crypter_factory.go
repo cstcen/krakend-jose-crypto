@@ -20,9 +20,7 @@ type NoEncrypterFactory struct {
 }
 
 func (n *NoEncrypterFactory) NewEncrypter() Encrypter {
-	return func(s string) (string, error) {
-		return s, nil
-	}
+	return &encrypt{}
 }
 
 type DecrypterFactory interface {
@@ -33,10 +31,27 @@ type NoDecrypterFactory struct {
 }
 
 func (n *NoDecrypterFactory) NewDecrypter() Decrypter {
-	return func(s string) (string, error) {
-		return s, nil
-	}
+	return &decrypt{}
 }
 
-type Encrypter func(plaintext string) (string, error)
-type Decrypter func(ciphertext string) (string, error)
+type Encrypter interface {
+	Encrypt(plaintext string) (string, error)
+}
+
+type encrypt struct {
+}
+
+func (e *encrypt) Encrypt(plaintext string) (string, error) {
+	return plaintext, nil
+}
+
+type Decrypter interface {
+	Decrypt(ciphertext string) (string, error)
+}
+
+type decrypt struct {
+}
+
+func (e *decrypt) Decrypt(ciphertext string) (string, error) {
+	return ciphertext, nil
+}
