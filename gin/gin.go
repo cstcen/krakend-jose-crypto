@@ -15,13 +15,16 @@ import (
 	"strings"
 )
 
-func HandlerFactory(hf luraGin.HandlerFactory, logger logging.Logger, rejecterF jose.RejecterFactory) luraGin.HandlerFactory {
-	return Decrypt(Encrypt(joseGin.HandlerFactory(hf, logger, rejecterF), logger), logger)
+func HandlerFactory(hf luraGin.HandlerFactory, logger logging.Logger, factory Factory) luraGin.HandlerFactory {
+	return Decrypt(Encrypt(joseGin.HandlerFactory(hf, logger, factory), logger, factory), logger, factory)
 }
 
-func Encrypt(hf luraGin.HandlerFactory, logger logging.Logger) luraGin.HandlerFactory {
+func Encrypt(hf luraGin.HandlerFactory, logger logging.Logger, encrypterF EncrypterFactory) luraGin.HandlerFactory {
 	return func(cfg *config.EndpointConfig, prxy proxy.Proxy) gin.HandlerFunc {
 		logPrefix := "[ENDPOINT: " + cfg.Endpoint + "][JWTEncrypt]"
+		if encrypterF == nil {
+			encrypterF = &NoEncrypterFactory{}
+		}
 		signerConfig, _, err := jose.NewSigner(cfg, nil)
 		handler := hf(cfg, prxy)
 		if err == jose.ErrNoSignerCfg {
@@ -44,6 +47,7 @@ func Encrypt(hf luraGin.HandlerFactory, logger logging.Logger) luraGin.HandlerFa
 				SignerConfig:   *signerConfig,
 				logger:         logger,
 				logPrefix:      logPrefix,
+				encrypterF:     encrypterF,
 			}
 
 			handler(c)
@@ -52,10 +56,13 @@ func Encrypt(hf luraGin.HandlerFactory, logger logging.Logger) luraGin.HandlerFa
 	}
 }
 
-func Decrypt(hf luraGin.HandlerFactory, logger logging.Logger) luraGin.HandlerFactory {
+func Decrypt(hf luraGin.HandlerFactory, logger logging.Logger, decrypterF DecrypterFactory) luraGin.HandlerFactory {
 	return func(cfg *config.EndpointConfig, prxy proxy.Proxy) gin.HandlerFunc {
 		logPrefix := "[ENDPOINT: " + cfg.Endpoint + "][JWTDecrypt]"
-		signatureConfig, err := jose.GetSignatureConfig(cfg)
+		if decrypterF == nil {
+			decrypterF = &NoDecrypterFactory{}
+		}
+		_, err := jose.GetSignatureConfig(cfg)
 		handler := hf(cfg, prxy)
 		if err == jose.ErrNoValidatorCfg {
 			logger.Debug(logPrefix, "Decrypt disabled")
@@ -73,13 +80,12 @@ func Decrypt(hf luraGin.HandlerFactory, logger logging.Logger) luraGin.HandlerFa
 		return func(c *gin.Context) {
 
 			req := c.Request
-			cipherKey := signatureConfig.CipherKey
 
 			prefix := "Bearer "
 			ciphertext := strings.TrimPrefix(c.GetHeader("Authorization"), prefix)
 			if len(ciphertext) != 0 {
 				logger.Debug(logPrefix, "header ciphertext: ", ciphertext)
-				plaintext, err := CFBDecrypt(ciphertext, cipherKey)
+				plaintext, err := decrypterF.NewDecrypter()(ciphertext)
 				if err != nil {
 					logger.Debug(logPrefix, "failed to decrypt: ", err.Error())
 					handler(c)

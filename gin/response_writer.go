@@ -2,7 +2,6 @@ package gin
 
 import (
 	"encoding/json"
-	"fmt"
 	"github.com/gin-gonic/gin"
 	jose "github.com/krakendio/krakend-jose/v2"
 	"github.com/luraproject/lura/v2/logging"
@@ -11,8 +10,9 @@ import (
 type ResponseWriter struct {
 	gin.ResponseWriter
 	jose.SignerConfig
-	logger    logging.Logger
-	logPrefix string
+	logger     logging.Logger
+	logPrefix  string
+	encrypterF EncrypterFactory
 }
 
 func (r *ResponseWriter) Write(p []byte) (n int, err error) {
@@ -20,8 +20,9 @@ func (r *ResponseWriter) Write(p []byte) (n int, err error) {
 	if err := json.Unmarshal(p, &res); err != nil {
 		return r.ResponseWriter.Write(p)
 	}
-	cipherKey := r.CipherKey
-	r.logger.Debug(r.logPrefix, "cipher key: ", fmt.Sprintf("%s", cipherKey))
+	// cipherKey := r.CipherKey
+	// r.logger.Debug(r.logPrefix, "cipher key: ", fmt.Sprintf("%s", cipherKey))
+	encrypter := r.encrypterF.NewEncrypter()
 	for _, k := range r.KeysToSign {
 		tmp, ok := res[k].(string)
 		if !ok {
@@ -29,7 +30,7 @@ func (r *ResponseWriter) Write(p []byte) (n int, err error) {
 			continue
 		}
 
-		ciphertext, err := CFBEncrypt(tmp, cipherKey)
+		ciphertext, err := encrypter(tmp)
 		if err != nil {
 			r.logger.Warning(r.logPrefix, "failed to encrypt: ", err.Error())
 			continue
