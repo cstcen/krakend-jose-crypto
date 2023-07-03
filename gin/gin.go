@@ -92,7 +92,7 @@ func Decrypt(hf luraGin.HandlerFactory, logger logging.Logger, decrypterF Decryp
 					return
 				}
 				logger.Debug(logPrefix, "plaintext: ", plaintext)
-				req.Header.Set("Authorization", plaintext)
+				req.Header.Set("Authorization", prefix+plaintext)
 			}
 
 			if req.Body != nil {
