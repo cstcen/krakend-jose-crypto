@@ -2,7 +2,10 @@ package gin
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"fmt"
+	"github.com/auth0-community/go-auth0"
 	"github.com/gin-gonic/gin"
 	jose "github.com/krakendio/krakend-jose/v2"
 	joseGin "github.com/krakendio/krakend-jose/v2/gin"
@@ -10,123 +13,394 @@ import (
 	"github.com/luraproject/lura/v2/logging"
 	"github.com/luraproject/lura/v2/proxy"
 	luraGin "github.com/luraproject/lura/v2/router/gin"
+	"github.com/tidwall/gjson"
+	"github.com/tidwall/sjson"
+	"gopkg.in/square/go-jose.v2/jwt"
 	"io"
 	"net/http"
+	"regexp"
 	"strings"
 )
 
+const (
+	DecryptNamespace = "github.com/cstcen/krakend-jose-crypto/decrypt"
+	EncryptNamespace = "github.com/cstcen/krakend-jose-crypto/encrypt"
+	defaultRolesKey  = "roles"
+)
+
 func HandlerFactory(hf luraGin.HandlerFactory, logger logging.Logger, factory Factory) luraGin.HandlerFactory {
-	return Decrypt(Encrypt(joseGin.HandlerFactory(hf, logger, factory), logger, factory), logger, factory)
+	return TokenSignatureValidator(TokenSigner(joseGin.HandlerFactory(hf, logger, factory), logger, factory), logger, factory, factory)
 }
 
-func Encrypt(hf luraGin.HandlerFactory, logger logging.Logger, encrypterF EncrypterFactory) luraGin.HandlerFactory {
+func TokenSigner(hf luraGin.HandlerFactory, logger logging.Logger, encrypterF EncrypterFactory) luraGin.HandlerFactory {
 	return func(cfg *config.EndpointConfig, prxy proxy.Proxy) gin.HandlerFunc {
-		logPrefix := "[ENDPOINT: " + cfg.Endpoint + "][JWTEncrypt]"
-		if encrypterF == nil {
-			encrypterF = &NoEncrypterFactory{}
-		}
-		signerConfig, _, err := jose.NewSigner(cfg, nil)
-		handler := hf(cfg, prxy)
+		logPrefix := "[ENDPOINT: " + cfg.Endpoint + "][JWTSigner]"
+		signerCfg, signer, err := jose.NewSigner(cfg, nil)
 		if err == jose.ErrNoSignerCfg {
-			logger.Debug(logPrefix, "Encrypt disabled")
-			return handler
+			logger.Debug(logPrefix, "Signer disabled")
+			return hf(cfg, prxy)
 		}
 		if err != nil {
-			logger.Error(logPrefix, "Unable to create the Encrypt:", err.Error())
-			return func(c *gin.Context) {
-				c.AbortWithStatus(http.StatusUnauthorized)
-			}
+			logger.Error(logPrefix, "Unable to create the signer:", err.Error())
+			return erroredHandler
 		}
 
-		logger.Debug(logPrefix, "Encrypt enabled")
+		if encrypterF == nil {
+			encrypterF = new(NoEncrypterFactory)
+		}
+		encrypter := encrypterF.NewEncrypter()
+
+		logger.Debug(logPrefix, "Signer enabled")
 
 		return func(c *gin.Context) {
+			proxyReq := luraGin.NewRequest(cfg.HeadersToPass)(c, cfg.QueryString)
+			ctx, cancel := context.WithTimeout(c, cfg.Timeout)
+			defer cancel()
 
-			c.Writer = &ResponseWriter{
-				ResponseWriter: c.Writer,
-				SignerConfig:   *signerConfig,
-				logger:         logger,
-				logPrefix:      logPrefix,
-				encrypterF:     encrypterF,
+			response, err := prxy(ctx, proxyReq)
+			if err != nil {
+				logger.Error(logPrefix, "Proxy response:", err.Error())
+				c.AbortWithStatus(http.StatusBadRequest)
+				return
 			}
 
-			handler(c)
+			if response == nil {
+				logger.Error(logPrefix, "Empty proxy response")
+				c.AbortWithStatus(http.StatusBadRequest)
+				return
+			}
 
+			if err := SignFields(signerCfg.KeysToSign, Signer(signer, encrypter), response); err != nil {
+				logger.Error(logPrefix, "Signing fields:", err.Error())
+				c.AbortWithStatus(http.StatusBadRequest)
+				return
+			}
+
+			for k, v := range response.Metadata.Headers {
+				c.Header(k, v[0])
+			}
+			c.JSON(response.Metadata.StatusCode, response.Data)
 		}
 	}
 }
 
-func Decrypt(hf luraGin.HandlerFactory, logger logging.Logger, decrypterF DecrypterFactory) luraGin.HandlerFactory {
+func TokenSignatureValidator(hf luraGin.HandlerFactory, logger logging.Logger, rejecterF jose.RejecterFactory, decrypterF DecrypterFactory) luraGin.HandlerFactory {
 	return func(cfg *config.EndpointConfig, prxy proxy.Proxy) gin.HandlerFunc {
-		logPrefix := "[ENDPOINT: " + cfg.Endpoint + "][JWTDecrypt]"
-		if decrypterF == nil {
-			decrypterF = &NoDecrypterFactory{}
+		logPrefix := "[ENDPOINT: " + cfg.Endpoint + "][JWTValidator]"
+		if rejecterF == nil {
+			rejecterF = new(jose.NopRejecterFactory)
 		}
-		_, err := jose.GetSignatureConfig(cfg)
+		rejecter := rejecterF.New(logger, cfg)
+		if decrypterF == nil {
+			decrypterF = new(NoDecrypterFactory)
+		}
+		decrypter := decrypterF.NewDecrypter()
+
 		handler := hf(cfg, prxy)
+		scfg, err := GetSignatureConfig(cfg)
 		if err == jose.ErrNoValidatorCfg {
-			logger.Debug(logPrefix, "Decrypt disabled")
+			logger.Info(logPrefix, "Validator disabled for this endpoint")
 			return handler
 		}
 		if err != nil {
-			logger.Error(logPrefix, "Unable to create the Decrypt:", err.Error())
-			return func(c *gin.Context) {
-				c.AbortWithStatus(http.StatusUnauthorized)
-			}
+			logger.Warning(logPrefix, "Unable to parse the configuration:", err.Error())
+			return erroredHandler
 		}
 
-		logger.Debug(logPrefix, "Decrypt enabled")
+		validator, err := jose.NewValidator(&scfg.SignatureConfig, FromBody(scfg.IsRefreshToken, scfg.TokenKeyInBody))
+		if err != nil {
+			logger.Fatal(logPrefix, "Unable to create the validator:", err.Error())
+			return erroredHandler
+		}
+
+		var aclCheck func(string, map[string]interface{}, []string) bool
+
+		if scfg.RolesKeyIsNested && strings.Contains(scfg.RolesKey, ".") && scfg.RolesKey[:4] != "http" {
+			logger.Debug(logPrefix, fmt.Sprintf("Roles will be matched against the nested key: '%s'", scfg.RolesKey))
+			aclCheck = jose.CanAccessNested
+		} else {
+			logger.Debug(logPrefix, fmt.Sprintf("Roles will be matched against the key: '%s'", scfg.RolesKey))
+			aclCheck = jose.CanAccess
+		}
+
+		var scopesMatcher func(string, map[string]interface{}, []string) bool
+
+		if len(scfg.Scopes) > 0 && scfg.ScopesKey != "" {
+			if scfg.ScopesMatcher == "all" {
+				logger.Debug(logPrefix, fmt.Sprintf("Constraint added: tokens must contain a claim '%s' with all these scopes: %v", scfg.ScopesKey, scfg.Scopes))
+				scopesMatcher = jose.ScopesAllMatcher
+			} else {
+				logger.Debug(logPrefix, fmt.Sprintf("Constraint added: tokens must contain a claim '%s' with any of these scopes: %v", scfg.ScopesKey, scfg.Scopes))
+				scopesMatcher = jose.ScopesAnyMatcher
+			}
+		} else {
+			logger.Debug(logPrefix, "No scope validation required")
+			scopesMatcher = jose.ScopesDefaultMatcher
+		}
+
+		if scfg.OperationDebug {
+			logger.Debug(logPrefix, "Validator enabled for this endpoint. Operation debug is enabled")
+		} else {
+			logger.Debug(logPrefix, "Validator enabled for this endpoint")
+		}
+
+		paramExtractor := extractRequiredJWTClaims(cfg)
 
 		return func(c *gin.Context) {
-
-			req := c.Request
-
-			prefix := "Bearer "
-			ciphertext := strings.TrimPrefix(c.GetHeader("Authorization"), prefix)
-			if len(ciphertext) != 0 {
-				logger.Debug(logPrefix, "header ciphertext: ", ciphertext)
-				plaintext, err := decrypterF.NewDecrypter().Decrypt(ciphertext)
-				if err != nil {
-					logger.Debug(logPrefix, "failed to decrypt: ", err.Error())
+			if scfg.IsRefreshToken {
+				if c.Request.Body == nil {
+					if scfg.OperationDebug {
+						logger.Error(logPrefix, "Unable to validate the refresh token: empty body")
+					}
+					c.AbortWithStatus(http.StatusUnauthorized)
+					return
+				}
+				reqBody, _ := io.ReadAll(c.Request.Body)
+				if gjson.GetBytes(reqBody, "grant_type").String() != "refresh_token" {
+					c.Request.Body = io.NopCloser(bytes.NewReader(reqBody))
 					handler(c)
 					return
 				}
-				logger.Debug(logPrefix, "plaintext: ", plaintext)
-				req.Header.Set("Authorization", prefix+plaintext)
+				reqBody = decryptFromBody(decrypter, reqBody, scfg.TokenKeyInBody)
+				c.Request.Body = io.NopCloser(bytes.NewReader(reqBody))
+			}
+			decryptFromHeader(c, decrypter)
+			decryptFromCookie(c, scfg, decrypter)
+
+			token, err := validator.ValidateRequest(c.Request)
+			if err != nil {
+				if scfg.OperationDebug {
+					logger.Error(logPrefix, "Unable to validate the token:", err.Error())
+				}
+				c.AbortWithStatus(http.StatusUnauthorized)
+				return
 			}
 
-			if req.Body != nil {
-				// decryptBody(req, cipherKey)
+			claims := map[string]interface{}{}
+			err = validator.Claims(c.Request, token, &claims)
+			if err != nil {
+				if scfg.OperationDebug {
+					logger.Error(logPrefix, "Token sent by client is invalid:", err.Error())
+				}
+				c.AbortWithStatus(http.StatusUnauthorized)
+				return
 			}
+
+			if rejecter.Reject(claims) {
+				if scfg.OperationDebug {
+					logger.Error(logPrefix, "Token sent by client rejected")
+				}
+				c.AbortWithStatus(http.StatusUnauthorized)
+				return
+			}
+
+			if !aclCheck(scfg.RolesKey, claims, scfg.Roles) {
+				if scfg.OperationDebug {
+					logger.Error(logPrefix, "Token sent by client does not have sufficient roles")
+				}
+				c.AbortWithStatus(http.StatusForbidden)
+				return
+			}
+
+			if !scopesMatcher(scfg.ScopesKey, claims, scfg.Scopes) {
+				if scfg.OperationDebug {
+					logger.Error(logPrefix, "Token sent by client does not have the required scopes")
+				}
+				c.AbortWithStatus(http.StatusForbidden)
+				return
+			}
+
+			propagateHeaders(cfg, scfg.PropagateClaimsToHeader, claims, c, logger)
+
+			paramExtractor(c, claims)
 
 			handler(c)
-
 		}
 	}
 }
 
-func decryptBody(req *http.Request, cipherKey []byte) {
-	var result map[string]any
-	if err := json.NewDecoder(req.Body).Decode(&result); err != nil {
-		return
+type SignatureConfig struct {
+	jose.SignatureConfig
+	IsRefreshToken bool   `json:"is_refresh_token,omitempty"`
+	TokenKeyInBody string `json:"token_key_in_body,omitempty"`
+}
+
+func GetSignatureConfig(cfg *config.EndpointConfig) (*SignatureConfig, error) {
+	tmp, ok := cfg.ExtraConfig[jose.ValidatorNamespace]
+	if !ok {
+		return nil, jose.ErrNoValidatorCfg
 	}
-	req.Body.Close()
-	keysToSign := []string{"access_token", "refresh_token"}
-	for _, k := range keysToSign {
-		ciphertext, ok := result[k].(string)
+	data, _ := json.Marshal(tmp)
+	res := new(SignatureConfig)
+	if err := json.Unmarshal(data, res); err != nil {
+		return nil, err
+	}
+
+	if res.RolesKey == "" {
+		res.RolesKey = defaultRolesKey
+	}
+	if !strings.HasPrefix(res.URI, "https://") && !res.DisableJWKSecurity {
+		return res, jose.ErrInsecureJWKSource
+	}
+	return res, nil
+}
+
+func Signer(signer jose.Signer, encrypter Encrypter) jose.Signer {
+	return func(token interface{}) (string, error) {
+		tmp, err := signer(token)
+		if err != nil {
+			return "", err
+		}
+		return encrypter.Encrypt(tmp)
+	}
+}
+
+func SignFields(keys []string, signer jose.Signer, response *proxy.Response) error {
+	raw, err := json.Marshal(response.Data)
+	if err != nil {
+		return err
+	}
+	result := gjson.ParseBytes(raw)
+	for _, key := range keys {
+		tmp := result.Get(key)
+		if !tmp.Exists() || !tmp.IsObject() {
+			continue
+		}
+		data, ok := tmp.Value().(map[string]interface{})
 		if !ok {
 			continue
 		}
-		plaintext, err := CFBDecrypt(ciphertext, cipherKey)
+		token, err := signer(data)
 		if err != nil {
-			return
+			return err
 		}
-		result[k] = plaintext
+		tmpRaw, err := sjson.SetBytes(raw, key, token)
+		if err != nil {
+			return err
+		}
+		raw = tmpRaw
 	}
+	if err := json.Unmarshal(raw, &response.Data); err != nil {
+		return err
+	}
+	return nil
+}
 
-	buf := new(bytes.Buffer)
-	if err := json.NewEncoder(buf).Encode(result); err != nil {
+func FromBody(isRefreshToken bool, refreshTokenKey string) jose.ExtractorFactory {
+	return func(key string) func(r *http.Request) (*jwt.JSONWebToken, error) {
+		if !isRefreshToken {
+			return joseGin.FromCookie(key)
+		}
+
+		return func(r *http.Request) (*jwt.JSONWebToken, error) {
+			if r.Body == nil {
+				return nil, auth0.ErrTokenNotFound
+			}
+
+			var reqBuf bytes.Buffer
+			reqTee := io.TeeReader(r.Body, &reqBuf)
+			reqBody, _ := io.ReadAll(reqTee)
+			r.Body = io.NopCloser(&reqBuf)
+			return jwt.ParseSigned(gjson.GetBytes(reqBody, refreshTokenKey).String())
+		}
+	}
+}
+
+func decryptFromBody(decrypter Decrypter, reqBody []byte, tokenKeyInBody string) []byte {
+	if len(tokenKeyInBody) == 0 {
+		return reqBody
+	}
+	tk, err := decrypter.Decrypt(gjson.GetBytes(reqBody, tokenKeyInBody).String())
+	if err != nil {
+		return reqBody
+	}
+	raw, err := sjson.SetBytes(reqBody, tokenKeyInBody, tk)
+	if err != nil {
+		return reqBody
+	}
+	return raw
+}
+
+func decryptFromCookie(c *gin.Context, scfg *SignatureConfig, decrypter Decrypter) {
+	cookie, err := c.Request.Cookie(scfg.CookieKey)
+	if err != nil || len(cookie.Value) == 0 {
 		return
 	}
-	req.Body = io.NopCloser(buf)
+	tk, err := decrypter.Decrypt(cookie.Value)
+	if err != nil {
+		return
+	}
+	c.SetCookie(cookie.Name, tk, cookie.MaxAge, cookie.Path, cookie.Domain, cookie.Secure, cookie.HttpOnly)
+}
+
+func decryptFromHeader(c *gin.Context, decrypter Decrypter) {
+	token := strings.TrimPrefix(c.Request.Header.Get("Authorization"), "Bearer ")
+	if len(token) == 0 {
+		return
+	}
+	tk, err := decrypter.Decrypt(token)
+	if err != nil {
+		return
+	}
+	c.Request.Header.Set("Authorization", "Bearer "+tk)
+}
+
+func erroredHandler(c *gin.Context) {
+	c.AbortWithStatus(http.StatusUnauthorized)
+}
+
+func propagateHeaders(cfg *config.EndpointConfig, propagationCfg [][]string, claims map[string]interface{}, c *gin.Context, logger logging.Logger) {
+	logPrefix := "[ENDPOINT: " + cfg.Endpoint + "][PropagateHeaders]"
+	if len(propagationCfg) > 0 {
+		headersToPropagate, err := jose.CalculateHeadersToPropagate(propagationCfg, claims)
+		if err != nil {
+			logger.Warning(logPrefix, err.Error())
+		}
+		for k, v := range headersToPropagate {
+			// Set header value - replaces existing one
+			c.Request.Header.Set(k, v)
+		}
+	}
+}
+
+var jwtParamsPattern = regexp.MustCompile(`{{\.JWT\.([^}]*)}}`)
+
+func extractRequiredJWTClaims(cfg *config.EndpointConfig) func(*gin.Context, map[string]interface{}) {
+	var required []string
+
+	for _, backend := range cfg.Backend {
+		for _, match := range jwtParamsPattern.FindAllStringSubmatch(backend.URLPattern, -1) {
+			if len(match) < 2 {
+				continue
+			}
+			required = append(required, match[1])
+		}
+	}
+	if len(required) == 0 {
+		return func(_ *gin.Context, _ map[string]interface{}) {}
+	}
+
+	return func(c *gin.Context, claims map[string]interface{}) {
+		cl := jose.Claims(claims)
+		for _, param := range required {
+			// TODO: check for nested claims
+			v, ok := cl.Get(param)
+			if !ok {
+				continue
+			}
+			c.Params = append(c.Params, gin.Param{Key: "JWT." + param, Value: v})
+		}
+	}
+}
+
+func GetRequestBody(req *http.Request) []byte {
+	var reqBody []byte
+	if req.Body == nil {
+		return reqBody
+	}
+	var reqBuf bytes.Buffer
+	reqTee := io.TeeReader(req.Body, &reqBuf)
+	reqBody, _ = io.ReadAll(reqTee)
+	req.Body = io.NopCloser(&reqBuf)
+	return reqBody
 }
