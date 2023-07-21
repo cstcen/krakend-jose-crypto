@@ -273,7 +273,11 @@ func SignFields(keys []string, signer jose.Signer, response *proxy.Response) err
 		if err != nil {
 			return
 		}
-		token, err := signer(value)
+		var m map[string]any
+		if err := json.Unmarshal(value, &m); err != nil {
+			return
+		}
+		token, err := signer(m)
 		if err != nil {
 			return
 		}
