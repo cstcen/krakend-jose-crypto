@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"github.com/auth0-community/go-auth0"
+	"github.com/buger/jsonparser"
 	"github.com/gin-gonic/gin"
 	jose "github.com/krakendio/krakend-jose/v2"
 	joseGin "github.com/krakendio/krakend-jose/v2/gin"
@@ -13,8 +14,6 @@ import (
 	"github.com/luraproject/lura/v2/logging"
 	"github.com/luraproject/lura/v2/proxy"
 	luraGin "github.com/luraproject/lura/v2/router/gin"
-	"github.com/tidwall/gjson"
-	"github.com/tidwall/sjson"
 	"gopkg.in/square/go-jose.v2/jwt"
 	"io"
 	"net/http"
@@ -156,7 +155,7 @@ func TokenSignatureValidator(hf luraGin.HandlerFactory, logger logging.Logger, r
 					return
 				}
 				reqBody, _ := io.ReadAll(c.Request.Body)
-				if gjson.GetBytes(reqBody, "grant_type").String() != "refresh_token" {
+				if _, err := jsonparser.GetString(reqBody, "refresh_token"); err != nil {
 					c.Request.Body = io.NopCloser(bytes.NewReader(reqBody))
 					handler(c)
 					return
@@ -256,31 +255,34 @@ func Signer(signer jose.Signer, encrypter Encrypter) jose.Signer {
 }
 
 func SignFields(keys []string, signer jose.Signer, response *proxy.Response) error {
-	raw, err := json.Marshal(response.Data)
+	src, err := json.Marshal(response.Data)
 	if err != nil {
 		return err
 	}
-	result := gjson.ParseBytes(raw)
-	for _, key := range keys {
-		tmp := result.Get(key)
-		if !tmp.Exists() || !tmp.IsObject() {
-			continue
-		}
-		data, ok := tmp.Value().(map[string]interface{})
-		if !ok {
-			continue
-		}
-		token, err := signer(data)
-		if err != nil {
-			return err
-		}
-		tmpRaw, err := sjson.SetBytes(raw, key, token)
-		if err != nil {
-			return err
-		}
-		raw = tmpRaw
+	var dst = src
+
+	paths := make([][]string, len(keys))
+	for i, key := range keys {
+		path := strings.Split(key, ".")
+		paths[i] = path
 	}
-	if err := json.Unmarshal(raw, &response.Data); err != nil {
+
+	jsonparser.EachKey(src, func(idx int, value []byte, vt jsonparser.ValueType, err error) {
+		if err != nil {
+			return
+		}
+		token, err := signer(value)
+		if err != nil {
+			return
+		}
+		tmp, err := jsonparser.Set(dst, []byte(token), paths[idx]...)
+		if err != nil {
+			return
+		}
+		dst = tmp
+	}, paths...)
+
+	if err := json.Unmarshal(dst, &response.Data); err != nil {
 		return err
 	}
 	return nil
@@ -301,7 +303,8 @@ func FromBody(isRefreshToken bool, refreshTokenKey string) jose.ExtractorFactory
 			reqTee := io.TeeReader(r.Body, &reqBuf)
 			reqBody, _ := io.ReadAll(reqTee)
 			r.Body = io.NopCloser(&reqBuf)
-			return jwt.ParseSigned(gjson.GetBytes(reqBody, refreshTokenKey).String())
+			token, _ := jsonparser.GetString(reqBody, refreshTokenKey)
+			return jwt.ParseSigned(token)
 		}
 	}
 }
@@ -310,11 +313,12 @@ func decryptFromBody(decrypter Decrypter, reqBody []byte, tokenKeyInBody string)
 	if len(tokenKeyInBody) == 0 {
 		return reqBody
 	}
-	tk, err := decrypter.Decrypt(gjson.GetBytes(reqBody, tokenKeyInBody).String())
+	token, _ := jsonparser.GetString(reqBody, tokenKeyInBody)
+	tk, err := decrypter.Decrypt(token)
 	if err != nil {
 		return reqBody
 	}
-	raw, err := sjson.SetBytes(reqBody, tokenKeyInBody, tk)
+	raw, err := jsonparser.Set(reqBody, []byte(tk), tokenKeyInBody)
 	if err != nil {
 		return reqBody
 	}
