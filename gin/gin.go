@@ -275,7 +275,7 @@ func SignFields(keys []string, signer jose.Signer, response *proxy.Response) err
 		if err != nil {
 			return
 		}
-		tmp, err := jsonparser.Set(dst, []byte(token), paths[idx]...)
+		tmp, err := jsonparser.Set(dst, []byte(fmt.Sprintf("%q", token)), paths[idx]...)
 		if err != nil {
 			return
 		}
@@ -318,7 +318,7 @@ func decryptFromBody(decrypter Decrypter, reqBody []byte, tokenKeyInBody string)
 	if err != nil {
 		return reqBody
 	}
-	raw, err := jsonparser.Set(reqBody, []byte(tk), tokenKeyInBody)
+	raw, err := jsonparser.Set(reqBody, []byte(fmt.Sprintf("%q", tk)), tokenKeyInBody)
 	if err != nil {
 		return reqBody
 	}
