@@ -161,6 +161,7 @@ func TokenSignatureValidator(hf luraGin.HandlerFactory, logger logging.Logger, r
 					return
 				}
 				reqBody = decryptFromBody(decrypter, reqBody, scfg.TokenKeyInBody)
+				c.Request.ContentLength = int64(len(reqBody))
 				c.Request.Body = io.NopCloser(bytes.NewReader(reqBody))
 			}
 			decryptFromHeader(c, decrypter)
