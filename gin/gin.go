@@ -29,7 +29,7 @@ const (
 )
 
 func HandlerFactory(hf luraGin.HandlerFactory, logger logging.Logger, factory Factory) luraGin.HandlerFactory {
-	return TokenSignatureValidator(TokenSigner(joseGin.HandlerFactory(hf, logger, factory), logger, factory), logger, factory, factory)
+	return TokenSignatureValidator(TokenSigner(hf, logger, factory), logger, factory, factory)
 }
 
 func TokenSigner(hf luraGin.HandlerFactory, logger logging.Logger, encrypterF EncrypterFactory) luraGin.HandlerFactory {
@@ -156,7 +156,7 @@ func TokenSignatureValidator(hf luraGin.HandlerFactory, logger logging.Logger, r
 					return
 				}
 				reqBody, _ := io.ReadAll(c.Request.Body)
-				if _, err := jsonparser.GetString(reqBody, "refresh_token"); err != nil {
+				if _, err := jsonparser.GetString(reqBody, scfg.TokenKeyInBody); err != nil {
 					c.Request.Body = io.NopCloser(bytes.NewReader(reqBody))
 					handler(c)
 					return
