@@ -58,7 +58,12 @@ func TokenSigner(hf luraGin.HandlerFactory, logger logging.Logger, encrypterF En
 			response, err := prxy(ctx, proxyReq)
 			if err != nil {
 				logger.Error(logPrefix, "Proxy response:", err.Error())
-				c.AbortWithStatusJSON(http.StatusBadRequest, err.Error())
+				var e gin.H
+				if err := json.Unmarshal([]byte(err.Error()), &e); err != nil {
+					c.AbortWithStatusJSON(http.StatusBadRequest, err.Error())
+				} else {
+					c.AbortWithStatusJSON(http.StatusBadRequest, e)
+				}
 				return
 			}
 
