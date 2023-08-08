@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"github.com/auth0-community/go-auth0"
 	"github.com/buger/jsonparser"
@@ -264,7 +265,7 @@ func SignFields(keys []string, signer jose.Signer, response *proxy.Response) err
 	if err != nil {
 		return err
 	}
-	var dst = src
+	var dst []byte
 
 	paths := make([][]string, len(keys))
 	for i, key := range keys {
@@ -290,6 +291,10 @@ func SignFields(keys []string, signer jose.Signer, response *proxy.Response) err
 		}
 		dst = tmp
 	}, paths...)
+
+	if dst == nil {
+		return errors.New("failed to sign")
+	}
 
 	if err := json.Unmarshal(dst, &response.Data); err != nil {
 		return err
